@@ -2437,11 +2437,15 @@ var qrcode = function() {
     if (!navigator.bluetooth) return say("err", "This browser has no Bluetooth for web pages. Use Chrome on a computer or an Android phone (in Brave, turn on brave:&#47;&#47;flags/#brave-web-bluetooth-api).");
     try {
       dev = await navigator.bluetooth.requestDevice({ filters: [{ namePrefix: "D110" }], optionalServices: [SVC] });
-      dev.addEventListener("gattserverdisconnected", function () { ch = null; $("connect").textContent = "Connect printer"; setReady(); say("warn", "The printer disconnected. Connect again to carry on: printed labels stay ticked."); });
+      dev.addEventListener("gattserverdisconnected", function () { ch = null; $("connect").textContent = "Connect printer"; setReady(); say("warn", "The printer disconnected (it may have gone to sleep). Connect again to carry on: printed labels stay ticked."); });
+      say("", "Connecting to " + esc(dev.name || "the printer") + "\u2026");
       var srv = await dev.gatt.connect(); ch = await (await srv.getPrimaryService(SVC)).getCharacteristic(CHR);
       await ch.startNotifications(); ch.addEventListener("characteristicvaluechanged", onData);
       $("connect").textContent = "Connected: " + (dev.name || "printer"); say("ok", "Connected to " + esc(dev.name || "the printer") + ". Print one test first if this is a new roll."); setReady();
-    } catch (e) { if (e && e.name === "NotFoundError") return; say("err", "Couldn’t connect: " + esc(e.message || e) + ". Is the printer on, close by, and not connected to the phone app?"); }
+    } catch (e) {
+      if (e && e.name === "NotFoundError") return say("warn", "No printer was picked. If the list was empty or the printer never appeared: <b>1.</b> On the Mac, open System Settings &rsaquo; Bluetooth, find the D110 and choose <b>Forget This Device</b> (when the Mac itself holds the printer, the browser can&rsquo;t see it, and it drops after a minute). <b>2.</b> Close the NIIMBOT app on the phone. <b>3.</b> Turn the printer off and on, then Connect printer again and pick it in the browser&rsquo;s list.");
+      say("err", "Couldn\u2019t connect: " + esc(e.message || e) + ". Is the printer on, close by, and not held by the Mac&rsquo;s Bluetooth settings or the phone app?");
+    }
   }
 
   async function printOne(lb) {
