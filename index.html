@@ -39,7 +39,8 @@
   <div class="bar">
     <button type="button" id="connect">Connect printer</button>
     <button type="button" id="test" disabled>Print one test</button>
-    <button type="button" class="primary" id="print" disabled>Print all</button>
+    <button type="button" class="primary" id="next" disabled>Print next 10</button>
+    <button type="button" id="print" disabled>Print all</button>
     <button type="button" id="stop" hidden>Stop after this label</button>
   </div>
   <div class="list" id="list"></div>
@@ -2353,6 +2354,7 @@ var qrcode = function() {
 <script>
 (function () {
   "use strict";
+  var busy = false, stopAsked = false, BATCH = 10;                 // BATCH: labels per "Print next" press
   var DPMM = 8, W = 40 * DPMM, H = 12 * DPMM, QR = 76;          // 203 dpi: 320 x 96 dots; the QR 9.5 mm, 2 mm from the short edge
   var SVC = "e7810a71-73ae-499d-8c15-faa9aef0c3f2", CHR = "bef8d6c9-9c21-4c9e-b632-bd58c1009f9f";
   var $ = function (id) { return document.getElementById(id); };
@@ -2368,6 +2370,11 @@ var qrcode = function() {
     }).filter(Boolean);
   }
   var labels = readLink();
+  // what this link already printed, kept on this computer, so a reload or a new day carries on where it stopped
+  var doneKey = "wa.labels.done." + (location.hash || "").slice(0, 4000);
+  function saveDone() { try { localStorage.setItem(doneKey, JSON.stringify(labels.filter(function (l) { return l.state === "done"; }).map(function (l) { return l.sku; }))); } catch (e) {} }
+  function loadDone() { try { var d = JSON.parse(localStorage.getItem(doneKey) || "[]"); labels.forEach(function (l) { if (d.indexOf(l.sku) >= 0) l.state = "done"; }); } catch (e) {} }
+  loadDone();
   try { var st = JSON.parse(localStorage.getItem("wa.labels.set") || "{}"); if (st.density) $("density").value = st.density; if (st.rotate) $("rotate").value = st.rotate; } catch (e) {}
   ["density", "rotate"].forEach(function (k) { $(k).addEventListener("change", function () { try { localStorage.setItem("wa.labels.set", JSON.stringify({ density: $("density").value, rotate: $("rotate").value })); } catch (e) {} }); });
 
@@ -2405,8 +2412,10 @@ var qrcode = function() {
     });
     var left = labels.filter(function (l) { return l.state !== "done"; }).length;
     $("print").textContent = left === labels.length ? "Print all " + labels.length : left ? "Print the " + left + " left" : "All printed";
+    $("next").textContent = left > BATCH ? "Print next " + BATCH : left ? "Print the last " + left : "All printed";
+    $("next").hidden = labels.length <= BATCH;
   }
-  function mark(i, state) { labels[i].state = state; var el = $("st" + i); if (el) { el.className = "st " + state; el.textContent = { done: "Printed", fail: "Not printed", now: "Printing…" }[state]; } }
+  function mark(i, state) { labels[i].state = state; saveDone(); var el = $("st" + i); if (el) { el.className = "st " + state; el.textContent = { done: "Printed", fail: "Not printed", now: "Printing…" }[state]; } }
 
   // ---- the printer (Bluetooth LE): packets 55 55 <type> <len> <data> <xor> AA AA, one answer per command
   var dev = null, ch = null, buf = [], waiter = null;
@@ -2471,15 +2480,14 @@ var qrcode = function() {
     await ask(0xF3, [1]);                                  // end print
   }
 
-  var busy = false, stopAsked = false;
-  function setReady() { $("test").disabled = $("print").disabled = !ch || busy || !labels.length; if (!labels.some(function (l) { return l.state !== "done"; })) $("print").disabled = true; }
-  async function run(onlyFirst) {
+  function setReady() { $("test").disabled = $("print").disabled = $("next").disabled = !ch || busy || !labels.length; if (!labels.some(function (l) { return l.state !== "done"; })) $("print").disabled = $("next").disabled = true; }
+  async function run(onlyFirst, limit) {
     if (busy || !ch) return; busy = true; stopAsked = false; setReady(); $("stop").hidden = onlyFirst;
     var n = 0;
     try {
       for (var i = 0; i < labels.length; i++) {
         if (onlyFirst ? i > 0 : labels[i].state === "done") continue;
-        if (stopAsked) break;
+        if (stopAsked || (limit && n >= limit)) break;
         mark(i, "now"); say("", "");
         try { await printOne(labels[i]); if (!onlyFirst) mark(i, "done"); else mark(i, ""); n++; }
         catch (e) { mark(i, "fail"); say("err", "Stopped at SKU " + esc(labels[i].sku) + ": " + esc(e.message || e) + " Fix it, then print the rest: what printed stays ticked."); break; }
@@ -2488,14 +2496,16 @@ var qrcode = function() {
       if (onlyFirst) { labels[0].state = ""; render(); say("ok", "Test label printed (not ticked). Check the position and that the scanner reads it."); }
       else if (!labels.some(function (l) { return l.state !== "done"; })) say("ok", "All " + labels.length + " printed.");
       else if (stopAsked) say("warn", "Stopped. " + n + " printed this time; the rest are still to do.");
-    } finally { busy = false; $("stop").hidden = true; render(); setReady(); }
+      else if (limit) say("ok", n + " printed, " + labels.filter(function (l) { return l.state !== "done"; }).length + " left. Press the button again to carry on.");
+    } finally { busy = false; $("stop").hidden = true; $("stop").textContent = "Stop after this label"; render(); setReady(); }
   }
 
   $("connect").addEventListener("click", connect);
   $("test").addEventListener("click", function () { run(true); });
   $("print").addEventListener("click", function () { run(false); });
+  $("next").addEventListener("click", function () { run(false, BATCH); });
   $("stop").addEventListener("click", function () { stopAsked = true; $("stop").textContent = "Stopping…"; });
-  window.addEventListener("hashchange", function () { if (!busy) { labels = readLink(); render(); setReady(); } });
+  window.addEventListener("hashchange", function () { if (!busy) { labels = readLink(); doneKey = "wa.labels.done." + (location.hash || "").slice(0, 4000); loadDone(); render(); setReady(); } });
   if (!navigator.bluetooth) say("warn", "This browser has no Bluetooth for web pages: use Chrome on a computer or an Android phone.");
   render(); setReady();
 })();
